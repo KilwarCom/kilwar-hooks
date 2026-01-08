@@ -1,0 +1,12 @@
+{
+  "version": "1.0.0",
+  "hooks": [
+    {
+      "name": "session-sync",
+      "file": "hooks/session-sync.sh",
+      "type": "pre_compact",
+      "version": "1.0.0",
+      "description": "Saves session data to Work Session Service before context compaction"
+    }
+  ]
+}
