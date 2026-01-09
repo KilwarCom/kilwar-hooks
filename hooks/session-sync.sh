@@ -1,178 +1,117 @@
 #!/bin/bash
-# Session Sync Hook - Captures Claude Code session data for Desktop App processing
-# Triggered on /compact (manual) - writes job file to outbox for JobWorker
+# =============================================================================
+# Session Sync Hook for Claude Code
 #
-# NEW: Extracts git metadata (commits, files changed, stats) for server-side processing
-
-# Debug log
-DEBUG_LOG="$HOME/.forge/hook-debug.log"
-echo "$(date): Hook started" >> "$DEBUG_LOG"
-
-set -e
-
-OUTBOX_DIR="$HOME/.forge/outbox/sessions"
-mkdir -p "$OUTBOX_DIR"
-
-# Read hook input from stdin
-INPUT=$(cat)
-echo "$(date): Input received: $INPUT" >> "$DEBUG_LOG"
-
-# Parse input JSON
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
-TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""')
-TRIGGER=$(echo "$INPUT" | jq -r '.trigger // "manual"')
-CWD=$(pwd)
-CAPTURED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-# =============================================================================
-# Git Metadata Extraction (NEW)
+# This script is executed by Claude Code's pre_compact hook to save session
+# data to the Work Session Service before context is compacted.
+#
+# Input (stdin JSON):
+#   - session_id: Unique session identifier
+#   - transcript_path: Path to conversation transcript (.jsonl)
+#   - cwd: Current working directory
+#   - trigger: "manual" or "auto"
+#
+# Requirements:
+#   - jq: JSON processor
+#   - curl: HTTP client
+#   - ~/.forge/config.json with services.sessions URL
+#   - ~/.forge/credentials.json with access_token
+#
+# Exit codes:
+#   0 - Success (or graceful failure - don't block compact)
+#   2 - Blocking error (prevents compact)
 # =============================================================================
 
-# Get git remote URL for project lookup
-GIT_REMOTE=$(git -C "$CWD" remote get-url origin 2>/dev/null || echo "")
-# Normalize: strip .git suffix and protocol
-GIT_REMOTE_NORMALIZED=$(echo "$GIT_REMOTE" | sed 's/\.git$//' | sed 's|^https://||' | sed 's|^git@||' | sed 's|:|/|')
+set -euo pipefail
 
-# Get current branch
-GIT_BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+# Configuration
+CONFIG_FILE="$HOME/.forge/config.json"
+CREDENTIALS_FILE="$HOME/.forge/credentials.json"
+LOG_FILE="$HOME/.claude/session-sync.log"
 
-# Get recent commits (last 10) - format as JSON array
-GIT_COMMITS="[]"
-if git -C "$CWD" rev-parse --git-dir > /dev/null 2>&1; then
-    COMMITS_RAW=$(git -C "$CWD" log --oneline -10 --format='{"hash":"%h","message":"%s","author":"%an","date":"%aI"}' 2>/dev/null || echo "")
-    if [ -n "$COMMITS_RAW" ]; then
-        GIT_COMMITS=$(echo "$COMMITS_RAW" | jq -s '.' 2>/dev/null || echo "[]")
-    fi
-fi
-
-# Get files changed (in last 10 commits) - format as JSON array
-GIT_FILES_CHANGED="[]"
-if git -C "$CWD" rev-parse --git-dir > /dev/null 2>&1; then
-    FILES_RAW=$(git -C "$CWD" diff --name-only HEAD~10 2>/dev/null || git -C "$CWD" diff --name-only HEAD 2>/dev/null || echo "")
-    if [ -n "$FILES_RAW" ]; then
-        GIT_FILES_CHANGED=$(echo "$FILES_RAW" | jq -R -s 'split("\n") | map(select(length > 0))' 2>/dev/null || echo "[]")
-    fi
-fi
-
-# Get diff stats
-GIT_STATS_FILES=0
-GIT_STATS_ADDITIONS=0
-GIT_STATS_DELETIONS=0
-if git -C "$CWD" rev-parse --git-dir > /dev/null 2>&1; then
-    STAT_LINE=$(git -C "$CWD" diff --stat HEAD~10 2>/dev/null | tail -1 || echo "")
-    if [ -n "$STAT_LINE" ]; then
-        # Parse: "X files changed, Y insertions(+), Z deletions(-)"
-        GIT_STATS_FILES=$(echo "$STAT_LINE" | grep -oE '[0-9]+' | head -1 || echo "0")
-        GIT_STATS_ADDITIONS=$(echo "$STAT_LINE" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo "0")
-        GIT_STATS_DELETIONS=$(echo "$STAT_LINE" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo "0")
-    fi
-fi
-
-# Build git JSON object
-GIT_JSON=$(cat << GITJSON
-{
-  "remote": "$GIT_REMOTE_NORMALIZED",
-  "branch": "$GIT_BRANCH",
-  "commits": $GIT_COMMITS,
-  "files_changed": $GIT_FILES_CHANGED,
-  "stats": {
-    "files": ${GIT_STATS_FILES:-0},
-    "additions": ${GIT_STATS_ADDITIONS:-0},
-    "deletions": ${GIT_STATS_DELETIONS:-0}
-  }
+# Logging helper
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"
 }
-GITJSON
-)
 
-# =============================================================================
-# Transcript Processing
-# =============================================================================
+# Read JSON input from stdin
+INPUT=$(cat)
+log "Hook triggered with input: $INPUT"
 
-# Expand ~ in transcript path
-TRANSCRIPT_PATH="${TRANSCRIPT_PATH/#\~/$HOME}"
+# Parse input fields
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
+TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
+CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
+TRIGGER=$(echo "$INPUT" | jq -r '.trigger // "unknown"')
 
-# Read transcript if available
-TRANSCRIPT_CONTENT=""
+if [ -z "$SESSION_ID" ]; then
+    log "ERROR: No session_id provided"
+    exit 0  # Don't block compact
+fi
+
+# Check for config file
+if [ ! -f "$CONFIG_FILE" ]; then
+    log "No config found at $CONFIG_FILE - skipping sync"
+    exit 0
+fi
+
+# Get sessions API URL from config
+SESSIONS_API_URL=$(jq -r '.services.sessions // empty' "$CONFIG_FILE")
+if [ -z "$SESSIONS_API_URL" ]; then
+    log "No sessions URL in config - skipping sync"
+    exit 0
+fi
+
+# Check for credentials
+if [ ! -f "$CREDENTIALS_FILE" ]; then
+    log "No credentials found at $CREDENTIALS_FILE - skipping sync"
+    exit 0
+fi
+
+# Extract access token
+ACCESS_TOKEN=$(jq -r '.access_token // empty' "$CREDENTIALS_FILE")
+if [ -z "$ACCESS_TOKEN" ]; then
+    log "No access_token in credentials - skipping sync"
+    exit 0
+fi
+
+# Extract project ID from cwd (derive from path or use default)
+# Format: last component of path as project identifier
+PROJECT_ID=$(basename "$CWD" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+if [ -z "$PROJECT_ID" ]; then
+    PROJECT_ID="default"
+fi
+
+log "Syncing session $SESSION_ID for project $PROJECT_ID (trigger: $TRIGGER)"
+
+# Generate summary from transcript if available
+SUMMARY=""
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-    # Get last 100KB of transcript to avoid huge files
-    TRANSCRIPT_CONTENT=$(tail -c 100000 "$TRANSCRIPT_PATH" 2>/dev/null | base64)
+    # Extract last few user/assistant exchanges for summary
+    SUMMARY=$(tail -20 "$TRANSCRIPT_PATH" 2>/dev/null | head -c 5000 || echo "")
 fi
 
-# =============================================================================
-# Plan Files
-# =============================================================================
+# Create or update session
+RESPONSE=$(curl -sf -X POST "$SESSIONS_API_URL/v1/sessions" \
+    -H "Authorization: Bearer $ACCESS_TOKEN" \
+    -H "Content-Type: application/json" \
+    -H "X-Project-Id: $PROJECT_ID" \
+    -d "{
+        \"actorType\": \"agent\",
+        \"source\": \"claude-code\",
+        \"environment\": \"local\",
+        \"clientContext\": {
+            \"sessionId\": \"$SESSION_ID\",
+            \"trigger\": \"$TRIGGER\",
+            \"cwd\": \"$CWD\"
+        }
+    }" 2>&1) || {
+    log "Failed to create session: $RESPONSE"
+    exit 0  # Don't block compact on API failure
+}
 
-# Find plan files in .claude/plans for this project
-PLANS_JSON="[]"
-PLANS_DIR="$HOME/.claude/plans"
-if [ -d "$PLANS_DIR" ]; then
-    PLAN_FILES=$(find "$PLANS_DIR" -name "*.md" -mmin -60 2>/dev/null | head -5)
-    if [ -n "$PLAN_FILES" ]; then
-        PLANS_ARRAY="["
-        FIRST=true
-        for plan in $PLAN_FILES; do
-            if [ "$FIRST" = true ]; then
-                FIRST=false
-            else
-                PLANS_ARRAY+=","
-            fi
-            PLAN_CONTENT=$(cat "$plan" 2>/dev/null | base64)
-            PLAN_NAME=$(basename "$plan")
-            PLANS_ARRAY+="{\"name\":\"$PLAN_NAME\",\"content\":\"$PLAN_CONTENT\"}"
-        done
-        PLANS_ARRAY+="]"
-        PLANS_JSON="$PLANS_ARRAY"
-    fi
-fi
+log "Session created/updated: $RESPONSE"
 
-# =============================================================================
-# Write Job File
-# =============================================================================
-
-# Generate unique job ID
-JOB_ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "job-$(date +%s)")
-
-# Write job file for Desktop App JobWorker
-JOB_FILE="$OUTBOX_DIR/session-$JOB_ID.json"
-
-# Use jq to build proper JSON (avoids escaping issues)
-jq -n \
-  --arg id "$JOB_ID" \
-  --arg type "session_sync" \
-  --arg status "pending" \
-  --arg created_at "$CAPTURED_AT" \
-  --arg session_id "$SESSION_ID" \
-  --arg cwd "$CWD" \
-  --arg trigger "$TRIGGER" \
-  --arg captured_at "$CAPTURED_AT" \
-  --arg transcript_path "$TRANSCRIPT_PATH" \
-  --arg transcript_base64 "$TRANSCRIPT_CONTENT" \
-  --argjson git "$GIT_JSON" \
-  --argjson plans "$PLANS_JSON" \
-  '{
-    id: $id,
-    type: $type,
-    status: $status,
-    created_at: $created_at,
-    session_id: $session_id,
-    cwd: $cwd,
-    git_remote: $git.remote,
-    trigger: $trigger,
-    captured_at: $captured_at,
-    data: {
-      session_id: $session_id,
-      cwd: $cwd,
-      trigger: $trigger,
-      captured_at: $captured_at,
-      transcript_path: $transcript_path,
-      transcript_base64: $transcript_base64,
-      git: $git,
-      plans: $plans
-    }
-  }' > "$JOB_FILE"
-
-echo "[SessionSync] Job created: $JOB_FILE (branch: $GIT_BRANCH, commits: $(echo "$GIT_COMMITS" | jq 'length'), files: $(echo "$GIT_FILES_CHANGED" | jq 'length'))" >&2
-
-# Allow compact to continue
+# Output success (optional JSON response)
 echo '{"continue": true}'
 exit 0
