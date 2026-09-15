@@ -1,0 +1,13 @@
+{
+  "_comment": "Kilwar managed settings for Claude Code. Deploy via the claude.ai admin console, or as /Library/Application Support/ClaudeCode/managed-settings.json (macOS) or /etc/claude-code/managed-settings.json (Linux). Managed settings are precedence level 1: a developer cannot override or remove this hook. The hook script itself must exist on disk; install.sh puts it there.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "$HOME/.claude/hooks/credential-exposure.sh" }
+        ]
+      }
+    ]
+  }
+}

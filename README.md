@@ -4,6 +4,24 @@ Claude Code hook scripts for the Kilwar ecosystem.
 
 ## Installation
 
+### The credential-exposure guard (required on every developer machine)
+
+One command, safe to run twice:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/KilwarCom/kilwar-hooks/main/install.sh | bash
+```
+
+Then restart Claude Code. It copies `hooks/credential-exposure.sh` into `~/.claude/hooks/`
+and wires it as a `PostToolUse` hook in `~/.claude/settings.json`, keeping every existing
+setting. It never reads, prints or sends anything from your machine.
+
+Admins: `managed-settings.json` in this repo is the same hook as a **managed setting**,
+for the claude.ai admin console or MDM. Managed settings are precedence level 1, so a
+developer cannot remove the hook. The script still has to be on disk; `install.sh` does that.
+
+### session-sync (Desktop App)
+
 The Desktop App automatically syncs these hooks to `~/.claude/hooks/`.
 
 For manual installation:
