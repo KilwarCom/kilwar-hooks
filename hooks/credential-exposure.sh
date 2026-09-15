@@ -53,7 +53,23 @@
 
 set -uo pipefail
 
+GUARD_VERSION="1.0.0"
 MARKER_DIR="$HOME/.kilwar/credential-incidents"
+
+# `--check`: prove the guard is installed and wired, in one line a developer can
+# paste into Slack. This is how "confirm it exists" works on day one, before the
+# EKKA attestation plan runs it for us.
+if [ "${1:-}" = "--check" ]; then
+  SELF="$HOME/.claude/hooks/credential-exposure.sh"
+  SETTINGS="$HOME/.claude/settings.json"
+  ok=1
+  [ -x "$SELF" ] || { echo "MISSING: $SELF not present or not executable"; ok=0; }
+  grep -q "credential-exposure.sh" "$SETTINGS" 2>/dev/null || { echo "NOT WIRED: no hook entry in $SETTINGS"; ok=0; }
+  OPEN="$(ls -1 "$MARKER_DIR" 2>/dev/null | wc -l | tr -d ' ')"
+  [ "$ok" = 1 ] && echo "guard $GUARD_VERSION installed, wired, open incidents: $OPEN, host: $(hostname -s 2>/dev/null)"
+  exit $(( ok ? 0 : 1 ))
+fi
+
 PAYLOAD="$(cat 2>/dev/null || true)"
 [ -n "$PAYLOAD" ] || exit 0
 
