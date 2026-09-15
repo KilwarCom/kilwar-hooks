@@ -7,6 +7,13 @@
       "type": "pre_compact",
       "version": "2.0.2",
       "description": "Saves session data to Work Session Service before context compaction"
+    },
+    {
+      "name": "credential-exposure",
+      "file": "hooks/credential-exposure.sh",
+      "type": "post_tool_use",
+      "version": "1.0.0",
+      "description": "Detects a real credential reaching the assistant's context, tells it to disclose and rotate immediately, and records the incident locally. Never echoes what it found."
     }
   ]
 }
