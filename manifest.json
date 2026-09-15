@@ -12,8 +12,8 @@
       "name": "credential-exposure",
       "file": "hooks/credential-exposure.sh",
       "type": "post_tool_use",
-      "version": "1.0.0",
-      "description": "Detects a real credential reaching the assistant's context, tells it to disclose and rotate immediately, and records the incident locally. Never echoes what it found."
+      "version": "1.1.0",
+      "description": "Detects a real credential reaching the assistant's context, tells it to disclose and rotate immediately, and records the incident locally. Never echoes what it found. Parses with python3, not jq: v1.0.0 used jq while the installer only required python3, so it was silently inert on any machine without jq. `--check` now self-tests detection rather than presence."
     }
   ]
 }

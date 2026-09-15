@@ -12,7 +12,11 @@
 # writes two files under ~/.claude and stops.
 #
 # Requires: bash, curl, python3 (macOS and every Linux dev image have all three).
-# Override the source ref with KILWAR_HOOKS_REF=v1.0.0 (default: main).
+# ⛔ NOT jq. v1.0.0 of the guard PARSED WITH jq while this installer only ever
+# checked for python3, so on a machine without jq the guard silently detected
+# nothing and `--check` still printed "installed, wired". The guard now parses
+# with python3, which is the thing this script actually requires.
+# Override the source ref with KILWAR_HOOKS_REF=v1.1.0 (default: main).
 # =============================================================================
 set -euo pipefail
 
@@ -59,4 +63,17 @@ if not already:
 else:
     print("already installed: nothing changed")
 PY
+# ⭐ AND PROVE IT WORKS BEFORE SAYING IT IS INSTALLED.
+#
+# "installed" used to mean "the file was copied and settings.json mentions it".
+# That is exactly what was true on the machine where the guard detected nothing
+# for its whole life. `--check` now runs a planted credential through the real
+# extractor and the real patterns, so this either proves detection or fails the
+# install loudly. An installer that cannot demonstrate the thing it installed
+# is the reason nobody noticed for a day.
+if ! "$HOOK" --check; then
+  echo "install: the guard was copied and wired, but its SELF-TEST FAILED — it is not detecting anything." >&2
+  echo "install: fix the cause above; do not treat this as installed." >&2
+  exit 1
+fi
 echo "restart Claude Code to activate."
